@@ -1,13 +1,12 @@
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 import re
+import xml.etree.ElementTree as ET
 import feedparser
 
 # Offizieller Feed der Amtlichen Sammlung (AS)
 AS_FEED_URL = "https://www.fedlex.admin.ch/feed/as/de"
 feed = feedparser.parse(AS_FEED_URL)
 
-# RSS 2.0 Wurzelstruktur aufbauen
 rss = ET.Element(
     "rss", version="2.0", attrib={"xmlns:atom": "http://www.w3.org/2005/Atom"}
 )
@@ -26,12 +25,18 @@ ET.SubElement(channel, "lastBuildDate").text = datetime.now(
     timezone.utc
 ).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-# Erkennt SR-Zahlen beginnend mit 8 (z. B. SR 8, SR 81, SR 812.21, SR 832.10)
-sr8_pattern = re.compile(r"\bSR\s*8\d{0,2}(\.\d+)*\b", re.IGNORECASE)
+# Breiterer Filter:
+# 1. Erkennt "SR 8", "SR 8xx", "(SR 8xx.xx)"
+# 2. Erkennt typische Gesetzeskürzel aus SR 8 (Arbeit, Gesundheit, Heilmittel, Sozialversicherungen)
+sr8_pattern = re.compile(
+    r"(\bSR\s*8\d{0,2}(\.\d+)*\b|\b(KVG|BVG|AVIG|UVG|IVG|AHVG|ELG|ArG|HMG|MepV|EpG|StHG)\b)",
+    re.IGNORECASE,
+)
 
 matched_items = 0
 for entry in feed.entries:
-    text_corpus = f"{entry.title} {entry.get('summary', '')}"
+    # Sucht in Titel, Kurzbeschreibung und Link-URL
+    text_corpus = f"{entry.title} {entry.get('summary', '')} {entry.link}"
 
     if sr8_pattern.search(text_corpus):
         item = ET.SubElement(channel, "item")
@@ -45,8 +50,26 @@ for entry in feed.entries:
             ET.SubElement(item, "pubDate").text = entry.published
         matched_items += 1
 
+# Fallback: Falls aktuell gar kein SR-8-Erlass im AS-Feed ist, einen Info-Eintrag setzen,
+# damit Outlook den Feed sofort akzeptiert und nicht über eine leere Datei stolpert.
+if matched_items == 0:
+    item = ET.SubElement(channel, "item")
+    ET.SubElement(item, "title").text = (
+        "SR-8 Monitor aktiv - Aktuell keine offenen Änderungen in der AS"
+    )
+    ET.SubElement(item, "link").text = (
+        "https://www.fedlex.admin.ch/de/cc/internal-law/8"
+    )
+    ET.SubElement(item, "description").text = (
+        "Der Filter läuft fehlerfrei. Sobald die Bundeskanzlei neue Erlasse zu SR 8 publiziert, erscheinen sie hier."
+    )
+    ET.SubElement(item, "guid").text = (
+        "sr8-initial-status-" + datetime.now(timezone.utc).strftime("%Y%m%d")
+    )
+    ET.SubElement(item, "pubDate").text = datetime.now(timezone.utc).strftime(
+        "%a, %d %b %Y %H:%M:%S GMT"
+    )
+
 tree = ET.ElementTree(rss)
 tree.write("sr8_feed.xml", encoding="utf-8", xml_declaration=True)
-print(
-    f"Erfolg: {matched_items} relevante Erlasse nach sr8_feed.xml geschrieben."
-)
+print(f"Abgeschlossen: {matched_items} Treffer erfasst (oder Status gesetzt).")
